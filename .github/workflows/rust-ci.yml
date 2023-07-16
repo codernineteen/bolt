@@ -1,0 +1,31 @@
+name: Rust CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Rust
+        uses: actions/checkout@v2
+        with:
+          path: "server-rust"
+      - name: Cargo hack
+        uses: taiki-e/install-action@cargo-hack
+      - name: Install cargo-audit
+        run: cd server-rust && cargo install cargo-audit
+      - name: Build
+        run: cd server-rust && cargo build --verbose
+      - name: Test
+        run: cd server-rust && cargo test --verbose
+      - name: Clippy
+        run: cd server-rust && cargo clippy --verbose -- -D warnings
+      - name: Audit
+        run: cd server-rust && cargo audit
