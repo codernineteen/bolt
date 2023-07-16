@@ -3,15 +3,23 @@ name = "server-rust"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+# features under this secion only compiled when downstream crates require it
+[features]
+
 [lib]
 name = "libserver"
 path = "src/lib.rs"
 
+[dev-dependencies]
+
 [dependencies]
-env_logger = "0.10.0"
-futures-channel = "0.3.28"
-futures-util = "0.3.28"
-log = "0.4.19"
+anyhow = "1.0.71"
+serde = "1.0.166"
+serde_json = "1.0.99"
+thiserror = "1.0.40"
 tokio = { version = "1",  features = ["full"] }
-tokio-tungstenite = "0.19.0"
+futures-channel = "0.3.28"
+futures-util = { version = "0.3.28", default-features = false, features = ["sink", "std"] }
+tokio-tungstenite = "*"
+
+
