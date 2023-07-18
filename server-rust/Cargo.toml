@@ -7,7 +7,7 @@ edition = "2021"
 [features]
 
 [lib]
-name = "libserver"
+name = "server_core"
 path = "src/lib.rs"
 
 [dev-dependencies]
