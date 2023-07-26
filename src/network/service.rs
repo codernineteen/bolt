@@ -7,7 +7,7 @@ use std::{
 };
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{mpsc, mpsc::error::SendError, oneshot},
+    sync::mpsc,
 };
 
 type SessionMap = Arc<Mutex<HashMap<SocketAddr, GameSession>>>;
@@ -20,7 +20,7 @@ pub struct Service {
     receiver: mpsc::UnboundedReceiver<ServiceMessage>,
     net_addr: NetAddress,
     sessions: SessionMap,
-    listener: Option<TcpListener>,
+    //listener: Option<TcpListener>,
 }
 
 #[derive(Clone)]
@@ -35,7 +35,7 @@ impl Service {
             receiver,
             net_addr,
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            listener: None,
+            // listener: None,
         }
     }
 
@@ -43,17 +43,15 @@ impl Service {
         match msg {
             ServiceMessage::StartService => {
                 let try_listener = TcpListener::bind(self.net_addr.addr_str.clone()).await;
-                self.listener = Some(try_listener.expect("Failed to bind addr"));
+                let listener = try_listener.expect("Failed to bind addr");
 
                 println!("Listener binded to {}", self.net_addr.addr_str);
 
-                loop {
-                    if let Ok((stream, addr)) = self.listener.as_ref().unwrap().accept().await {
-                        stream
-                            .set_nodelay(true)
-                            .expect("Failed to set nodelay option to socket"); // turn off Nagle algorithm
-                        tokio::spawn(Service::handle_connection(stream, addr));
-                    }
+                while let Ok((stream, addr)) = listener.accept().await {
+                    stream
+                        .set_nodelay(true)
+                        .expect("Failed to set nodelay option to socket"); // turn off Nagle algorithm
+                    tokio::spawn(Service::handle_connection(stream, addr));
                 }
             }
         }
@@ -69,30 +67,34 @@ impl Service {
     }
 }
 
-impl Default for ServiceHandle {
-    fn default() -> Self {
+// impl Default for ServiceHandle {
+//     async fn default() -> Self {
+//         let (sender, receiver) = mpsc::unbounded_channel();
+//         let actor = Service::new(NetAddress::new(127, 0, 0, 1, 8080), receiver);
+//         run_service_actor(actor).await;
+
+//         Self { sender }
+//     }
+// }
+
+impl ServiceHandle {
+    pub async fn new() -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
         let actor = Service::new(NetAddress::new(127, 0, 0, 1, 8080), receiver);
         tokio::spawn(run_service_actor(actor));
 
         Self { sender }
     }
-}
 
-impl ServiceHandle {
-    pub async fn start_service(&self) -> Result<bool, SendError<ServiceMessage>> {
+    pub async fn start_service(&self) {
         let msg = ServiceMessage::StartService;
-
-        //println!("Start service");
 
         match self.sender.send(msg) {
             Ok(_) => {
-                //println!("sent message");
-                Ok(true)
+                println!("Started a service")
             }
             Err(e) => {
-                println!("Failed to send message");
-                Err(e)
+                println!("Failed to send message. {}", e);
             }
         }
     }
