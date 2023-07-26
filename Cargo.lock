@@ -451,6 +451,7 @@ name = "server-rust"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "futures-channel",
  "futures-util",
  "serde",

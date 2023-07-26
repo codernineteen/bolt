@@ -6,9 +6,14 @@ edition = "2021"
 # features under this secion only compiled when downstream crates require it
 [features]
 
+# core library for networking
 [lib]
 name = "server_core"
 path = "src/lib.rs"
+
+# executable file source
+[[bin]]
+name = "game_server"
 
 [dev-dependencies]
 
@@ -21,5 +26,6 @@ tokio = { version = "1",  features = ["full"] }
 futures-channel = "0.3.28"
 futures-util = { version = "0.3.28", default-features = false, features = ["sink", "std"] }
 tokio-tungstenite = "*"
+bytes = "1"
 
 

@@ -1,40 +1,48 @@
-use {
-    super::service::Service,
-    futures_channel::mpsc::{unbounded, UnboundedSender},
-    futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt},
-    std::{
-        collections::HashMap,
-        net::SocketAddr,
-        sync::{atomic::AtomicBool, Arc, Mutex, Weak},
-    },
-    tokio::net::TcpStream,
-    tokio_tungstenite::{tungstenite::protocol::Message, WebSocketStream},
-};
+// use {
+//     super::{recv_buffer::RecvBuffer, service::Service},
+//     futures_channel::mpsc::{unbounded, UnboundedSender},
+//     futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt},
+//     std::{
+//         collections::HashMap,
+//         net::SocketAddr,
+//         sync::{atomic::AtomicBool, Arc, Mutex, Weak},
+//     },
+//     tokio::net::TcpStream,
+//     tokio_tungstenite::{tungstenite::protocol::Message, WebSocketStream},
+// };
+use std::net::SocketAddr;
 
-type Tx = UnboundedSender<Message>;
-type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
+// type replacement
+// type Tx = UnboundedSender<Message>;
+// type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
 
-pub struct Session {
-    service: Weak<Service>,
-    socket: WebSocketStream<TcpStream>,
-    connected: AtomicBool,
+// 64KB buffer size default
+//const BUFFER_SIZE: usize = 0x10000;
+
+trait Session {
+    fn on_connect(addr: SocketAddr);
+    fn on_disconnect();
+    fn on_recv() -> i32;
+    fn on_send();
 }
 
-impl Session {
-    pub fn new(service: Weak<Service>, socket: WebSocketStream<TcpStream>) -> Self {
-        Self {
-            service,
-            socket,
-            connected: AtomicBool::new(false),
-        }
+pub struct GameSession {}
+
+impl Session for GameSession {
+    fn on_connect(addr: SocketAddr) {
+        println!("A user connected to server | port : {}", addr.port());
     }
 
-    pub async fn handle_connection(raw_stream: TcpStream, addr: SocketAddr) {
-        println!("Incoming TCP connection from: {}", addr);
+    fn on_disconnect() {
+        println!("A session disconnected");
+    }
 
-        let ws_stream = tokio_tungstenite::accept_async(raw_stream)
-            .await
-            .expect("Error during the websocket handshake occurred");
-        println!("WebSocket connection established: {}", addr);
+    fn on_recv() -> i32 {
+        // TODO : define the recv logic
+        0
+    }
+
+    fn on_send() {
+        // TODO : define the send logica
     }
 }
