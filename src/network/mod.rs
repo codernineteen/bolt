@@ -1,3 +1,4 @@
+pub mod global;
 pub mod net_addr;
 pub mod recv_buffer;
 pub mod service;
