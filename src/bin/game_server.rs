@@ -7,6 +7,7 @@ async fn main() -> Result<(), IoError> {
     env_logger::init();
 
     let service = ServiceHandle::new();
+    service.send_handle_ref().await;
     service.start_service().await;
 
     tokio::signal::ctrl_c().await.unwrap();

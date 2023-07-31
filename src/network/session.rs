@@ -14,8 +14,9 @@ trait Session {
     fn on_send();
 }
 
+#[derive(Debug)]
 pub enum SessionMessage {
-    OnSend,
+    OnSend { ws_msg: WsMessage },
     OnRecv,
 }
 
@@ -27,9 +28,10 @@ pub struct GameSession {
     addr: SocketAddr,
     recv_buffer: WsRecvBuffer,
     send_buffer: WsSendBuffer,
-    ws_sender: WsMessageSender,
-    ws_receiver: WsMessageReceiver,
+    _ws_sender: WsMessageSender,
+    _ws_receiver: WsMessageReceiver,
     msg_receiver: mpsc::UnboundedReceiver<SessionMessage>,
+    service_handle: Arc<ServiceHandle>,
 }
 
 impl Session for GameSession {
@@ -56,6 +58,7 @@ impl GameSession {
         addr: SocketAddr,
         ws_stream: WsStream,
         msg_receiver: mpsc::UnboundedReceiver<SessionMessage>,
+        service_handle: Arc<ServiceHandle>,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel::<WsMessage>();
         let (send_buffer, recv_buffer) = ws_stream.split();
@@ -63,33 +66,35 @@ impl GameSession {
             addr,
             send_buffer,
             recv_buffer,
-            ws_receiver: rx,
-            ws_sender: tx,
+            _ws_receiver: rx,
+            _ws_sender: tx,
             msg_receiver,
+            service_handle,
         }
     }
     //TODO : channel closed issue
     pub async fn handle_message(&mut self, msg: SessionMessage) {
+        println!("{:?}", msg);
         match msg {
-            SessionMessage::OnSend => {
-                while let Some(msg) = self.ws_receiver.recv().await {
-                    if let Err(e) = self.send_buffer.send(msg).await {
-                        error!(
-                            "reason : {} | process : send msg from session to buffer ",
-                            e
-                        );
-                    };
-                }
+            SessionMessage::OnSend { ws_msg } => {
+                // while let Some(msg) = self.ws_receiver.recv().await {
+                //     if let Err(e) = self.send_buffer.send(msg).await {
+                //         error!(
+                //             "reason : {} | process : send msg from session to buffer ",
+                //             e
+                //         );
+                //     };
+                // }
+                if let Err(e) = self.send_buffer.send(ws_msg).await {
+                    error!("reason: {} | while send message to send_buffer", e);
+                };
             }
             SessionMessage::OnRecv => {
                 while let Some(msg) = self.recv_buffer.next().await {
                     let msg = msg.unwrap();
                     let msg_text = msg.clone().into_text().unwrap();
                     info!("got message from {} : {}", self.addr, msg_text);
-
-                    if let Err(e) = self.ws_sender.send(msg) {
-                        error!("reason : {} | process : send msg to ws_receiver", e);
-                    }
+                    self.service_handle.broadcast(msg, self.addr).await;
                 }
             }
         }
@@ -97,16 +102,16 @@ impl GameSession {
 }
 
 impl SessionHandle {
-    pub fn new(addr: SocketAddr, ws_stream: WsStream) -> Self {
+    pub fn new(addr: SocketAddr, ws_stream: WsStream, service_handle: Arc<ServiceHandle>) -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let actor = GameSession::new(addr, ws_stream, receiver);
+        let actor = GameSession::new(addr, ws_stream, receiver, service_handle);
         tokio::spawn(run_session_actor(actor));
 
         Self { sender }
     }
 
-    pub fn register_send(&self) {
-        let msg = SessionMessage::OnSend;
+    pub fn register_send(&self, ws_msg: WsMessage) {
+        let msg = SessionMessage::OnSend { ws_msg };
         self.sender
             .send(msg)
             .expect("failed to send message to session actor");
