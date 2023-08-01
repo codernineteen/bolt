@@ -1,95 +1,147 @@
 use super::{
+    global::G_SERVICE_HANDLE,
     service::ServiceHandle,
-    types::{WsMessage, WsMessageReceiver, WsMessageSender, WsRecvBuffer, WsSendBuffer, WsStream},
+    types::{WsMessage, WsRecvBuffer, WsSendBuffer, WsStream},
 };
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info};
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 
+/**
+ * Session message definition
+ */
+
 #[derive(Debug)]
-pub enum SessionMessage {
-    OnSend { ws_msg: WsMessage },
+pub enum ReadSessionMessage {
     OnRecv,
 }
 
-pub struct SessionHandle {
-    sender: mpsc::UnboundedSender<SessionMessage>,
+#[derive(Debug)]
+pub enum WriteSessionMessage {
+    OnSend { ws_msg: WsMessage },
 }
 
-pub struct Session {
+/**
+ * Read Session struct
+ */
+
+pub struct ReadSession {
     addr: SocketAddr,
     recv_buffer: WsRecvBuffer,
-    send_buffer: WsSendBuffer,
-    _ws_sender: WsMessageSender,
-    _ws_receiver: WsMessageReceiver,
-    msg_receiver: mpsc::UnboundedReceiver<SessionMessage>,
+    msg_receiver: mpsc::UnboundedReceiver<ReadSessionMessage>,
 }
 
-impl Session {
+impl ReadSession {
     pub fn new(
         addr: SocketAddr,
-        ws_stream: WsStream,
-        msg_receiver: mpsc::UnboundedReceiver<SessionMessage>,
+        recv_buffer: WsRecvBuffer,
+        msg_receiver: mpsc::UnboundedReceiver<ReadSessionMessage>,
     ) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel::<WsMessage>();
-        let (send_buffer, recv_buffer) = ws_stream.split();
         Self {
             addr,
-            send_buffer,
             recv_buffer,
-            _ws_receiver: rx,
-            _ws_sender: tx,
             msg_receiver,
         }
     }
-    //TODO : channel closed issue
-    pub async fn handle_message(&mut self, msg: SessionMessage) {
+
+    pub async fn handle_recv_message(&mut self) {
+        while let Some(msg) = self.recv_buffer.next().await {
+            let msg = msg.unwrap();
+            G_SERVICE_HANDLE.broadcast(msg, self.addr).await;
+        }
+    }
+}
+
+/**
+ * Write Session struct
+ */
+
+pub struct WriteSession {
+    addr: SocketAddr,
+    send_buffer: WsSendBuffer,
+    msg_receiver: mpsc::UnboundedReceiver<WriteSessionMessage>,
+}
+
+impl WriteSession {
+    pub fn new(
+        addr: SocketAddr,
+        send_buffer: WsSendBuffer,
+        msg_receiver: mpsc::UnboundedReceiver<WriteSessionMessage>,
+    ) -> Self {
+        Self {
+            addr,
+            send_buffer,
+            msg_receiver,
+        }
+    }
+
+    pub async fn handle_message(&mut self, msg: WriteSessionMessage) {
         match msg {
-            SessionMessage::OnSend { ws_msg } => {
+            WriteSessionMessage::OnSend { ws_msg } => {
                 if let Err(e) = self.send_buffer.send(ws_msg).await {
                     error!("reason: {} | while send message to send_buffer", e);
                 };
             }
-            SessionMessage::OnRecv => {
-                while let Some(msg) = self.recv_buffer.next().await {
-                    let msg = msg.unwrap();
-                    let msg_text = msg.clone().into_text().unwrap();
-                    info!("got message from {} : {}", self.addr, msg_text);
-                    ServiceHandle::instance().broadcast(msg, self.addr).await;
-                }
-            }
         }
     }
 }
 
+/**
+ * Session Handle Struct
+ */
+
+pub struct SessionHandle {
+    pub read_sender: mpsc::UnboundedSender<ReadSessionMessage>,
+    pub write_sender: mpsc::UnboundedSender<WriteSessionMessage>,
+}
+
 impl SessionHandle {
     pub fn new(addr: SocketAddr, ws_stream: WsStream) -> Self {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let actor = Session::new(addr, ws_stream, receiver);
-        tokio::spawn(run_session_actor(actor));
+        let (read_sender, read_receiver) = mpsc::unbounded_channel::<ReadSessionMessage>();
+        let (write_sender, write_receiver) = mpsc::unbounded_channel::<WriteSessionMessage>();
 
-        Self { sender }
+        let (send_buffer, recv_buffer) = ws_stream.split();
+        let read_actor = ReadSession::new(addr, recv_buffer, read_receiver);
+        let write_actor = WriteSession::new(addr, send_buffer, write_receiver);
+
+        // separate actor into read and write part.
+        tokio::spawn(run_read_session_actor(read_actor));
+        tokio::spawn(run_write_session_actor(write_actor));
+
+        Self {
+            read_sender,
+            write_sender,
+        }
     }
 
     pub fn register_send(&self, ws_msg: WsMessage) {
-        let msg = SessionMessage::OnSend { ws_msg };
-        self.sender
+        let msg = WriteSessionMessage::OnSend { ws_msg };
+        self.write_sender
             .send(msg)
             .expect("failed to send message to session actor");
     }
 
     pub fn register_recv(&self) {
-        let msg = SessionMessage::OnRecv;
-        self.sender
+        let msg = ReadSessionMessage::OnRecv;
+        self.read_sender
             .send(msg)
             .expect("Failed to send message to session actor");
     }
 }
 
-async fn run_session_actor(mut actor: Session) {
+async fn run_read_session_actor(mut actor: ReadSession) {
     while let Some(msg) = actor.msg_receiver.recv().await {
-        info!("{:?}", msg);
-        actor.handle_message(msg).await
+        info!("Read Session Actor : {:?}", msg);
+        match msg {
+            ReadSessionMessage::OnRecv => actor.handle_recv_message().await,
+        }
+    }
+}
+
+async fn run_write_session_actor(mut actor: WriteSession) {
+    while let Some(msg) = actor.msg_receiver.recv().await {
+        info!("Write Session Actor : {:?}", msg);
+        actor.handle_message(msg).await;
     }
 }

@@ -1,5 +1,4 @@
 use super::{
-    net_addr::NetAddress,
     session::SessionHandle,
     types::{SessionMap, WsMessage},
 };
@@ -9,83 +8,90 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::{
-    net::TcpListener,
+    net::TcpStream,
     sync::{mpsc, RwLock},
 };
 
 #[derive(Debug)]
 pub enum ServiceMessage {
-    StartService,
+    Connect(TcpStream, SocketAddr),
     Broadcast { msg: WsMessage, source: SocketAddr },
 }
 
+/**
+ * --------------
+ * Service Struct
+ * --------------
+ */
+
 pub struct Service {
-    receiver: mpsc::UnboundedReceiver<ServiceMessage>,
-    net_addr: NetAddress,
     sessions: SessionMap,
-    listener: Option<TcpListener>,
+    msg_receiver: mpsc::UnboundedReceiver<ServiceMessage>,
+    connection_receiver: mpsc::Receiver<ServiceMessage>,
 }
 
 impl Service {
     // Construct reference counted Service
-    pub fn new(net_addr: NetAddress, receiver: mpsc::UnboundedReceiver<ServiceMessage>) -> Self {
+    pub fn new(
+        msg_receiver: mpsc::UnboundedReceiver<ServiceMessage>,
+        connection_receiver: mpsc::Receiver<ServiceMessage>,
+    ) -> Self {
         Self {
-            receiver,
-            net_addr,
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            listener: None,
+            msg_receiver,
+            connection_receiver,
         }
     }
-    //TODO : channel closed issue
+
+    pub async fn connect(&mut self, msg: ServiceMessage) {
+        match msg {
+            ServiceMessage::Connect(stream, addr) => {
+                stream
+                    .set_nodelay(true)
+                    .expect("Failed to set nodelay option to socket"); // turn off Nagle algorithm
+                info!("incoming TCP connection from {}", addr);
+
+                let ws_stream = tokio_tungstenite::accept_async(stream)
+                    .await
+                    .expect("Error occurred during the websocket handshake");
+
+                info!("websocket connection established to {}", addr.port());
+
+                let session_handle = SessionHandle::new(addr, ws_stream);
+                session_handle.register_recv();
+                self.sessions.write().await.insert(addr, session_handle);
+            }
+            _ => error!("This message is not for connection"),
+        }
+    }
+
     pub async fn handle_message(&mut self, msg: ServiceMessage) {
         match msg {
-            ServiceMessage::StartService => {
-                let try_listener = TcpListener::bind(self.net_addr.addr_str.clone()).await;
-                self.listener = Some(try_listener.expect("Failed to bind addr"));
-
-                info!("listener binded to {}", self.net_addr.addr_str);
-
-                while let Ok((stream, addr)) = self.listener.as_ref().unwrap().accept().await {
-                    stream
-                        .set_nodelay(true)
-                        .expect("Failed to set nodelay option to socket"); // turn off Nagle algorithm
-                    info!("incoming TCP connection from {}", addr);
-
-                    let ws_stream = tokio_tungstenite::accept_async(stream)
-                        .await
-                        .expect("Error occurred during the websocket handshake");
-
-                    info!("websocket connection established to {}", addr.port());
-
-                    let session_handle = SessionHandle::new(addr, ws_stream);
-                    session_handle.register_recv();
-                    self.sessions.write().await.insert(addr, session_handle);
-                }
-            }
             ServiceMessage::Broadcast { msg, source } => {
-                println!("messsage incoming");
                 let sessions = self.sessions.read().await;
-                //println!("{:?}", sessions.keys());
+
                 let broadcast_recipients = sessions
                     .iter()
                     .filter(|(addr, _)| addr != &&source)
                     .map(|(_, handle)| handle);
                 for recp in broadcast_recipients {
-                    info!("there is session handle");
                     recp.register_send(msg.clone());
                 }
             }
+            _ => info!("unsupported message"),
         }
     }
 }
 
 /**
- * ServiceHandle
+ * ---------------------
+ * Service Handle Struct
+ * ---------------------
  */
 
-#[derive(Clone)]
 pub struct ServiceHandle {
-    pub sender: mpsc::UnboundedSender<ServiceMessage>,
+    pub msg_sender: mpsc::UnboundedSender<ServiceMessage>,
+    pub connection_sender: mpsc::Sender<ServiceMessage>,
 }
 
 impl Default for ServiceHandle {
@@ -94,34 +100,33 @@ impl Default for ServiceHandle {
     }
 }
 
-lazy_static! {
-    pub static ref G_SERVICE_HANDLE: Arc<ServiceHandle> = Arc::new(ServiceHandle::default());
-}
+// Global Arc
+// lazy_static! {
+//     pub static ref G_SERVICE_HANDLE: Arc<ServiceHandle> = Arc::new(ServiceHandle::default());
+// }
 
 impl ServiceHandle {
     pub fn new() -> Self {
-        println!("new service handle");
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let actor = Service::new(NetAddress::new(127, 0, 0, 1, 8080), receiver);
+        let (msg_sender, msg_receiver) = mpsc::unbounded_channel();
+        let (connection_sender, connection_receiver) = mpsc::channel(1);
+        let actor = Service::new(msg_receiver, connection_receiver);
         tokio::spawn(run_service_actor(actor));
 
-        Self { sender }
+        Self {
+            msg_sender,
+            connection_sender,
+        }
     }
 
-    pub fn instance() -> &'static Arc<ServiceHandle> {
-        &G_SERVICE_HANDLE
-    }
+    // pub fn instance() -> &'static Arc<ServiceHandle> {
+    //     &G_SERVICE_HANDLE
+    // }
 
-    pub async fn start_service(&self) {
-        let msg = ServiceMessage::StartService;
+    pub async fn handle_connection(&self, stream: TcpStream, addr: SocketAddr) {
+        let msg = ServiceMessage::Connect(stream, addr);
 
-        match self.sender.send(msg) {
-            Ok(_) => {
-                info!("started a server service")
-            }
-            Err(e) => {
-                error!("failed to send message. {}", e);
-            }
+        if let Err(e) = self.connection_sender.send(msg).await {
+            error!("reason: {} | while: send 'StartService' message ", e);
         }
     }
 
@@ -129,7 +134,7 @@ impl ServiceHandle {
     pub async fn broadcast(&self, msg: WsMessage, source: SocketAddr) {
         let msg = ServiceMessage::Broadcast { msg, source };
 
-        if let Err(e) = self.sender.send(msg) {
+        if let Err(e) = self.msg_sender.send(msg) {
             error!("reason: {} | while: broadcasting to actor", e);
         }
         info!("sent message to actor");
@@ -138,12 +143,16 @@ impl ServiceHandle {
 
 async fn run_service_actor(mut actor: Service) {
     loop {
-        match actor.receiver.recv().await {
-            Some(msg) => {
-                info!("{:?}", msg);
-                actor.handle_message(msg).await;
-            }
-            None => println!("sender closed"),
+        tokio::select! {
+            Some(msg) = actor.connection_receiver.recv() => {
+                info!("Service Handle : {:?}", msg);
+                actor.connect(msg).await
+            },
+            Some(msg) = actor.msg_receiver.recv() => {
+                info!("Service Handle : {:?}", msg);
+                actor.handle_message(msg).await
+            },
+            else => break,
         }
     }
 }
