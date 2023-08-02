@@ -14,6 +14,7 @@ use tokio::{
 #[derive(Debug)]
 pub enum ServiceMessage {
     Connect(TcpStream, SocketAddr),
+    Disconnect(SocketAddr),
     Broadcast { msg: WsMessage, source: SocketAddr },
 }
 
@@ -77,6 +78,10 @@ impl Service {
                     recp.register_send(msg.clone());
                 }
             }
+            ServiceMessage::Disconnect(addr) => {
+                info!("a client({}) disconnected", addr.port());
+                self.sessions.write().await.remove(&addr);
+            }
             _ => info!("unsupported message"),
         }
     }
@@ -122,14 +127,23 @@ impl ServiceHandle {
         }
     }
 
-    // TODO : implement broadcasting
-    pub async fn broadcast(&self, msg: WsMessage, source: SocketAddr) {
+    pub fn broadcast(&self, msg: WsMessage, source: SocketAddr) {
         let msg = ServiceMessage::Broadcast { msg, source };
 
         if let Err(e) = self.msg_sender.send(msg) {
             error!("reason: {} | while: broadcasting to actor", e);
         }
-        info!("sent message to actor");
+    }
+
+    pub fn handle_disconnection(&self, addr: SocketAddr) {
+        let msg = ServiceMessage::Disconnect(addr);
+
+        if let Err(e) = self.msg_sender.send(msg) {
+            error!(
+                "reason: {} | while: send disconnect msg to service actor",
+                e
+            );
+        }
     }
 }
 

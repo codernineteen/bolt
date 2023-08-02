@@ -1,6 +1,5 @@
 use super::{
     global::G_SERVICE_HANDLE,
-    service::ServiceHandle,
     types::{WsMessage, WsRecvBuffer, WsSendBuffer, WsStream},
 };
 use futures_util::{SinkExt, StreamExt};
@@ -46,9 +45,27 @@ impl ReadSession {
     }
 
     pub async fn handle_recv_message(&mut self) {
-        while let Some(msg) = self.recv_buffer.next().await {
-            let msg = msg.unwrap();
-            G_SERVICE_HANDLE.broadcast(msg, self.addr).await;
+        while let Some(ws_msg) = self.recv_buffer.next().await {
+            let ws_msg = ws_msg.unwrap();
+            match ws_msg {
+                WsMessage::Text(str) => {
+                    G_SERVICE_HANDLE.broadcast(WsMessage::Text(str), self.addr);
+                }
+                WsMessage::Binary(_) => {
+                    info!("session : binary message incoming");
+                }
+                WsMessage::Ping(_) => {}
+                WsMessage::Pong(_) => {
+                    info!("session : pong message incoming");
+                }
+                WsMessage::Frame(_) => {
+                    info!("session : frame message incoming");
+                }
+                WsMessage::Close(_) => {
+                    G_SERVICE_HANDLE.handle_disconnection(self.addr);
+                    info!("session : close message incoming");
+                }
+            }
         }
     }
 }
@@ -57,6 +74,7 @@ impl ReadSession {
  * Write Session struct
  */
 
+#[allow(dead_code)] // TODO: should use 'addr' field later
 pub struct WriteSession {
     addr: SocketAddr,
     send_buffer: WsSendBuffer,
