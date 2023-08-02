@@ -2,7 +2,6 @@ use super::{
     session::SessionHandle,
     types::{SessionMap, WsMessage},
 };
-use lazy_static::lazy_static;
 use log::*;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -101,9 +100,6 @@ impl Default for ServiceHandle {
 }
 
 // Global Arc
-// lazy_static! {
-//     pub static ref G_SERVICE_HANDLE: Arc<ServiceHandle> = Arc::new(ServiceHandle::default());
-// }
 
 impl ServiceHandle {
     pub fn new() -> Self {
@@ -117,10 +113,6 @@ impl ServiceHandle {
             connection_sender,
         }
     }
-
-    // pub fn instance() -> &'static Arc<ServiceHandle> {
-    //     &G_SERVICE_HANDLE
-    // }
 
     pub async fn handle_connection(&self, stream: TcpStream, addr: SocketAddr) {
         let msg = ServiceMessage::Connect(stream, addr);
