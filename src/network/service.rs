@@ -1,3 +1,5 @@
+use crate::network::global::G_SERVICE_HANDLE;
+
 use super::{
     session::SessionHandle,
     types::{SessionMap, WsMessage},
@@ -11,11 +13,26 @@ use tokio::{
     sync::{mpsc, RwLock},
 };
 
+/**
+ * --------------
+ * Message Enum definition
+ * --------------
+ */
+#[derive(Debug)]
+pub enum BroadcastMessage {
+    Connection(SocketAddr),
+    Disconnection(SocketAddr),
+    Text(String),
+}
+
 #[derive(Debug)]
 pub enum ServiceMessage {
     Connect(TcpStream, SocketAddr),
     Disconnect(SocketAddr),
-    Broadcast { msg: WsMessage, source: SocketAddr },
+    Broadcast {
+        ws_msg: WsMessage,
+        source: SocketAddr,
+    },
 }
 
 /**
@@ -60,6 +77,11 @@ impl Service {
                 let session_handle = SessionHandle::new(addr, ws_stream);
                 session_handle.register_recv();
                 self.sessions.write().await.insert(addr, session_handle);
+
+                G_SERVICE_HANDLE.broadcast(
+                    WsMessage::Text(format!("a client {} connected", addr.port())),
+                    addr,
+                );
             }
             _ => error!("This message is not for connection"),
         }
@@ -67,20 +89,23 @@ impl Service {
 
     pub async fn handle_message(&mut self, msg: ServiceMessage) {
         match msg {
-            ServiceMessage::Broadcast { msg, source } => {
+            ServiceMessage::Broadcast { mut ws_msg, source } => {
+                if let WsMessage::Close(_) = ws_msg {
+                    info!("a client({}) disconnected", source.port());
+                    self.sessions.write().await.remove(&source);
+                    ws_msg = WsMessage::Text(format!("{} disconnected", source.port()));
+                    //write lock dropped here.
+                }
                 let sessions = self.sessions.read().await;
 
                 let broadcast_recipients = sessions
                     .iter()
                     .filter(|(addr, _)| addr != &&source)
                     .map(|(_, handle)| handle);
+
                 for recp in broadcast_recipients {
-                    recp.register_send(msg.clone());
+                    recp.register_send(ws_msg.clone());
                 }
-            }
-            ServiceMessage::Disconnect(addr) => {
-                info!("a client({}) disconnected", addr.port());
-                self.sessions.write().await.remove(&addr);
             }
             _ => info!("unsupported message"),
         }
@@ -127,22 +152,11 @@ impl ServiceHandle {
         }
     }
 
-    pub fn broadcast(&self, msg: WsMessage, source: SocketAddr) {
-        let msg = ServiceMessage::Broadcast { msg, source };
+    pub fn broadcast(&self, ws_msg: WsMessage, source: SocketAddr) {
+        let msg = ServiceMessage::Broadcast { ws_msg, source };
 
         if let Err(e) = self.msg_sender.send(msg) {
             error!("reason: {} | while: broadcasting to actor", e);
-        }
-    }
-
-    pub fn handle_disconnection(&self, addr: SocketAddr) {
-        let msg = ServiceMessage::Disconnect(addr);
-
-        if let Err(e) = self.msg_sender.send(msg) {
-            error!(
-                "reason: {} | while: send disconnect msg to service actor",
-                e
-            );
         }
     }
 }

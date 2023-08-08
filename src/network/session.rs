@@ -46,26 +46,9 @@ impl ReadSession {
 
     pub async fn handle_recv_message(&mut self) {
         while let Some(ws_msg) = self.recv_buffer.next().await {
+            // TODO : way to identify whether it is broadcast message or target message
             let ws_msg = ws_msg.unwrap();
-            match ws_msg {
-                WsMessage::Text(str) => {
-                    G_SERVICE_HANDLE.broadcast(WsMessage::Text(str), self.addr);
-                }
-                WsMessage::Binary(_) => {
-                    info!("session : binary message incoming");
-                }
-                WsMessage::Ping(_) => {}
-                WsMessage::Pong(_) => {
-                    info!("session : pong message incoming");
-                }
-                WsMessage::Frame(_) => {
-                    info!("session : frame message incoming");
-                }
-                WsMessage::Close(_) => {
-                    G_SERVICE_HANDLE.handle_disconnection(self.addr);
-                    info!("session : close message incoming");
-                }
-            }
+            G_SERVICE_HANDLE.broadcast(ws_msg, self.addr);
         }
     }
 }
